@@ -1,0 +1,58 @@
+import os
+import asyncio
+from aiohttp import web
+import asyncpg
+
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
+routes = web.RouteTableDef()
+
+async def init_db(app):
+    # Wait for DB to be ready
+    for _ in range(10):
+        try:
+            app["db"] = await asyncpg.create_pool(
+                host=DB_HOST,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD,
+            )
+            break
+        except Exception:
+            print("Waiting for DB...")
+            await asyncio.sleep(2)
+
+    async with app["db"].acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id SERIAL PRIMARY KEY,
+                flow_id TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                tags TEXT[]
+            );
+        """)
+
+@routes.get("/runs")
+async def get_runs(request):
+    async with request.app["db"].acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM runs;")
+
+    result = []
+    for row in rows:
+        row_dict = dict(row)
+        row_dict["created_at"] = row_dict["created_at"].isoformat()
+        result.append(row_dict)
+
+    return web.json_response(result)
+
+async def create_app():
+    app = web.Application()
+    app.add_routes(routes)
+    app.on_startup.append(init_db)
+    return app
+
+if __name__ == "__main__":
+    web.run_app(create_app(), port=8080)
