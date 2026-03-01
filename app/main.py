@@ -1,6 +1,7 @@
 import os
 import asyncio
 from aiohttp import web
+from packaging import version
 import asyncpg
 
 DB_HOST = os.getenv("DB_HOST")
@@ -35,26 +36,49 @@ async def init_db(app):
             );
         """)
 
+VERSION_THRESHOLD = "2.0.0"  # clients >= 2.0.0 get paginated response
+
+
+def is_new_client(client_version: str) -> bool:
+    try:
+        return version.parse(client_version) >= version.parse(VERSION_THRESHOLD)
+    except Exception:
+        return False
+
 @routes.get("/runs")
 async def get_runs(request):
-    # Read query params
+    # -------- Version Detection --------
+    client_version = request.headers.get("X-Metaflow-Client-Version")
+    new_client = client_version and is_new_client(client_version)
+
+    # -------- Query Parameters --------
+    tag_filter = request.query.get("tags")
     limit = int(request.query.get("limit", 50))
     offset = int(request.query.get("offset", 0))
 
     async with request.app["db"].acquire() as conn:
-        # Get total count
-        total = await conn.fetchval("SELECT COUNT(*) FROM runs")
 
-        # Fetch paginated results
-        rows = await conn.fetch(
+        # -------- Filtering Logic --------
+        if tag_filter:
+            total_query = "SELECT COUNT(*) FROM runs WHERE $1 = ANY(tags)"
+            data_query = """
+                SELECT * FROM runs
+                WHERE $1 = ANY(tags)
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
             """
-            SELECT * FROM runs
-            ORDER BY created_at DESC
-            LIMIT $1 OFFSET $2
-            """,
-            limit,
-            offset
-        )
+            total = await conn.fetchval(total_query, tag_filter)
+            rows = await conn.fetch(data_query, tag_filter, limit, offset)
+
+        else:
+            total_query = "SELECT COUNT(*) FROM runs"
+            data_query = """
+                SELECT * FROM runs
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+            """
+            total = await conn.fetchval(total_query)
+            rows = await conn.fetch(data_query, limit, offset)
 
     data = []
     for row in rows:
@@ -62,6 +86,11 @@ async def get_runs(request):
         row_dict["created_at"] = row_dict["created_at"].isoformat()
         data.append(row_dict)
 
+    # -------- Legacy Behavior --------
+    if not new_client:
+        return web.json_response(data)
+
+    # -------- New Paginated Response --------
     has_more = offset + limit < total
     next_offset = offset + limit if has_more else None
 
