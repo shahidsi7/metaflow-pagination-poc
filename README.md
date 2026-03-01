@@ -42,3 +42,16 @@ Size: XXXXX bytes
 Time: XXXXX s
 
 This serves as the baseline before implementing pagination.
+
+## Pagination Improvement
+
+Before Pagination:
+Size: XXXXX bytes  
+Time: XXXXX s  
+
+After Pagination (limit=50):
+Size: XXXXX bytes  
+Time: XXXXX s  
+
+This demonstrates significant reduction in response size
+and improved response time.

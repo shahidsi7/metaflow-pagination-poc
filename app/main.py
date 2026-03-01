@@ -37,16 +37,44 @@ async def init_db(app):
 
 @routes.get("/runs")
 async def get_runs(request):
-    async with request.app["db"].acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM runs;")
+    # Read query params
+    limit = int(request.query.get("limit", 50))
+    offset = int(request.query.get("offset", 0))
 
-    result = []
+    async with request.app["db"].acquire() as conn:
+        # Get total count
+        total = await conn.fetchval("SELECT COUNT(*) FROM runs")
+
+        # Fetch paginated results
+        rows = await conn.fetch(
+            """
+            SELECT * FROM runs
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+            """,
+            limit,
+            offset
+        )
+
+    data = []
     for row in rows:
         row_dict = dict(row)
         row_dict["created_at"] = row_dict["created_at"].isoformat()
-        result.append(row_dict)
+        data.append(row_dict)
 
-    return web.json_response(result)
+    has_more = offset + limit < total
+    next_offset = offset + limit if has_more else None
+
+    return web.json_response({
+        "data": data,
+        "pagination": {
+            "limit": limit,
+            "offset": offset,
+            "total": total,
+            "has_more": has_more,
+            "next_offset": next_offset
+        }
+    })
 
 async def create_app():
     app = web.Application()
