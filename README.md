@@ -23,6 +23,7 @@ runs table:
 ## Setup
 
 docker compose up --build -d
+
 docker exec -it metaflow-app python seed.py
 
 ## Endpoint
