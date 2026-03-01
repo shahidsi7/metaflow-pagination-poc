@@ -56,3 +56,36 @@ Time: XXXXX s
 
 This demonstrates significant reduction in response size
 and improved response time.
+
+## Advanced Features
+
+### Tag Filtering
+Supports filtering using PostgreSQL array column:
+
+GET /runs?tags=prod
+
+Uses:
+WHERE $1 = ANY(tags)
+
+### Version Detection
+Uses X-Metaflow-Client-Version header.
+
+- Clients >= 2.0.0 receive paginated response
+- Older clients receive legacy flat response
+- Ensures backward compatibility
+
+### Pagination
+Supports:
+- limit (default 50)
+- offset
+- total count
+- has_more
+- next_offset
+
+### Test Coverage
+Includes pytest suite covering:
+- Pagination behavior
+- Offset correctness
+- Tag filtering
+- Legacy vs new client handling
+- Default limit edge case
