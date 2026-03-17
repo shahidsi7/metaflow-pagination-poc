@@ -1,7 +1,6 @@
 import os
 import asyncio
 from aiohttp import web
-from packaging import version
 import asyncpg
 
 DB_HOST = os.getenv("DB_HOST")
@@ -12,7 +11,6 @@ DB_PASSWORD = os.getenv("DB_PASSWORD")
 routes = web.RouteTableDef()
 
 async def init_db(app):
-    # Wait for DB to be ready
     for _ in range(10):
         try:
             app["db"] = await asyncpg.create_pool(
@@ -27,6 +25,7 @@ async def init_db(app):
             await asyncio.sleep(2)
 
     async with app["db"].acquire() as conn:
+        # Create runs table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS runs (
                 id SERIAL PRIMARY KEY,
@@ -36,49 +35,52 @@ async def init_db(app):
             );
         """)
 
-VERSION_THRESHOLD = "2.0.0"  # clients >= 2.0.0 get paginated response
+        # Create GIN index on tags so @> containment operator can use it.
+        # ANY() cannot use this index — @> can.
+        # CONCURRENTLY means it won't lock the table during creation.
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_runs_tags_gin
+            ON runs USING GIN(tags);
+        """)
 
-
-def is_new_client(client_version: str) -> bool:
-    try:
-        return version.parse(client_version) >= version.parse(VERSION_THRESHOLD)
-    except Exception:
-        return False
 
 @routes.get("/runs")
 async def get_runs(request):
-    # -------- Version Detection --------
-    client_version = request.headers.get("X-Metaflow-Client-Version")
-    new_client = client_version and is_new_client(client_version)
-
     # -------- Query Parameters --------
     tag_filter = request.query.get("tags")
-    limit = int(request.query.get("limit", 50))
-    offset = int(request.query.get("offset", 0))
+
+    try:
+        limit = max(1, min(int(request.query.get("limit", 50)), 500))
+        offset = max(0, int(request.query.get("offset", 0)))
+    except ValueError:
+        raise web.HTTPBadRequest(reason="limit and offset must be integers")
+
+    # Fetch limit+1 rows. If the extra row exists, has_more=True.
+    # This avoids running COUNT(*) entirely on every request.
+    fetch_limit = limit + 1
 
     async with request.app["db"].acquire() as conn:
 
-        # -------- Filtering Logic --------
         if tag_filter:
-            total_query = "SELECT COUNT(*) FROM runs WHERE $1 = ANY(tags)"
-            data_query = """
+            # Use array containment operator @> with ARRAY cast.
+            # This allows the GIN index (idx_runs_tags_gin) to be used.
+            # ANY() performs a sequential scan and cannot use GIN.
+            rows = await conn.fetch("""
                 SELECT * FROM runs
-                WHERE $1 = ANY(tags)
+                WHERE tags @> ARRAY[$1::text]
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
-            """
-            total = await conn.fetchval(total_query, tag_filter)
-            rows = await conn.fetch(data_query, tag_filter, limit, offset)
-
+            """, tag_filter, fetch_limit, offset)
         else:
-            total_query = "SELECT COUNT(*) FROM runs"
-            data_query = """
+            rows = await conn.fetch("""
                 SELECT * FROM runs
                 ORDER BY created_at DESC
                 LIMIT $1 OFFSET $2
-            """
-            total = await conn.fetchval(total_query)
-            rows = await conn.fetch(data_query, limit, offset)
+            """, fetch_limit, offset)
+
+    # Determine has_more from the extra row, then drop it
+    has_more = len(rows) == fetch_limit
+    rows = rows[:limit]
 
     data = []
     for row in rows:
@@ -86,30 +88,28 @@ async def get_runs(request):
         row_dict["created_at"] = row_dict["created_at"].isoformat()
         data.append(row_dict)
 
-    # -------- Legacy Behavior --------
-    if not new_client:
-        return web.json_response(data)
-
-    # -------- New Paginated Response --------
-    has_more = offset + limit < total
+    # Pagination metadata goes in response headers — not in the response body.
+    # This means all clients (old and new) receive the same flat array body.
+    # Old clients ignore the headers. New clients read them.
+    # No version detection or branching needed.
     next_offset = offset + limit if has_more else None
 
-    return web.json_response({
-        "data": data,
-        "pagination": {
-            "limit": limit,
-            "offset": offset,
-            "total": total,
-            "has_more": has_more,
-            "next_offset": next_offset
-        }
-    })
+    headers = {
+        "X-Has-More": str(has_more).lower(),       # "true" or "false"
+        "X-Next-Offset": str(next_offset) if next_offset is not None else "",
+        "X-Limit": str(limit),
+        "X-Offset": str(offset),
+    }
+
+    return web.json_response(data, headers=headers)
+
 
 async def create_app():
     app = web.Application()
     app.add_routes(routes)
     app.on_startup.append(init_db)
     return app
+
 
 if __name__ == "__main__":
     web.run_app(create_app(), port=8080)
