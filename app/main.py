@@ -103,6 +103,35 @@ async def get_runs(request):
 
     return web.json_response(data, headers=headers)
 
+@routes.get("/runs/all")
+async def get_runs_unbounded(request):
+    """
+    Simulates the OLD unbounded behavior — no limit, dumps entire table.
+    Used only for benchmarking the 'before' state.
+    """
+    tag_filter = request.query.get("tags")
+
+    async with request.app["db"].acquire() as conn:
+        if tag_filter:
+            rows = await conn.fetch("""
+                SELECT * FROM runs
+                WHERE tags @> ARRAY[$1::text]
+                ORDER BY created_at DESC
+            """, tag_filter)
+        else:
+            rows = await conn.fetch("""
+                SELECT * FROM runs
+                ORDER BY created_at DESC
+            """)
+
+    data = []
+    for row in rows:
+        row_dict = dict(row)
+        row_dict["created_at"] = row_dict["created_at"].isoformat()
+        data.append(row_dict)
+
+    return web.json_response(data)
+
 
 async def create_app():
     app = web.Application()
