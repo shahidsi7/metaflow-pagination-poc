@@ -449,4 +449,5 @@ The `condition: service_healthy` ensures the app never starts before Postgres is
 ## 🔗 Related
 
 - GSoC proposal: Metadata Service Request Improvements (Pagination + Server-side Filtering)
-- PR #465 — [Unify Dockerfiles into a single multi-stage Dockerfile](https://github.com/Netflix/metaflow-service/pull/465)
+- PR #19 — [Unify Dockerfiles into a single multi-stage Dockerfile](https://github.com/saikonen/metaflow-service/pull/19)
+- PR #17 - [Fix/autocomplete tag cache staleness](https://github.com/saikonen/metaflow-service/pull/17)
